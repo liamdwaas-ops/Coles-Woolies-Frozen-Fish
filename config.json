@@ -1,9 +1,16 @@
 {
-  "queries": ["pasta sauce", "tomato paste", "passata", "pesto"],
+  "category_pages": {
+    "Coles": "https://www.coles.com.au/browse/frozen/frozen-fish-seafood?sortBy=recommendedDescending",
+    "Woolworths": "https://www.woolworths.com.au/shop/browse/freezer/frozen-seafood"
+  },
+  "woolworths_category": {
+    "category_id": "1_ACA2FC2",
+    "fallback_slug": "frozen-fish"
+  },
   "retailers": ["Coles", "Woolworths"],
-  "coles_verified_build_id_fallback": "20260818.2-7e2ae3d344c191b86ba032b60dd696513fb01a33",
+  "coles_verified_build_id_fallback": "20260825.4-04e74006a8bbaa6cbf7882b792617e5c7de5081a",
   "page_size": 48,
-  "max_pages_per_query": 20,
+  "max_pages": 50,
   "request_delay_seconds": 1.0,
   "location": {
     "suburb": "Cheltenham",

@@ -17,13 +17,13 @@ ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 
 
-def scrape_with_fallback(scrapers, queries, previous):
+def scrape_with_fallback(scrapers, category_pages, previous):
     """Scrape retailers independently, retaining last verified data on access failures."""
     current = {}
     failures = []
     for retailer, scraper in scrapers:
         try:
-            current.update(scraper.scrape(queries))
+            current.update(scraper.scrape(category_pages[retailer]))
         except Exception as exc:
             retained = {product_id: product for product_id, product in previous.items()
                         if product.get("retailer") == retailer}
@@ -67,7 +67,7 @@ def main():
                 load_json(DATA / "current.json", {}).items()
                 if is_allowed_product(product.get("name", ""), product.get("brand", ""))}
     history = consolidate_events(load_json(DATA / "events.json", []))
-    workbook_path = DATA / "coles-woolworths-sauce-change-history.xlsx"
+    workbook_path = DATA / "coles-woolworths-frozen-seafood-change-history.xlsx"
     if args.send_multibuy_test:
         test_events = []
         observed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -115,16 +115,18 @@ def main():
         current = load_json(Path(args.fixture), {})
     else:
         coles = ColesScraper(
-            config["request_delay_seconds"], config["max_pages_per_query"],
+            config["request_delay_seconds"], config["max_pages"],
             config["page_size"], config.get("location"),
             config.get("coles_verified_build_id_fallback", "")
         )
         woolworths = WoolworthsScraper(
-            config["request_delay_seconds"], config["max_pages_per_query"],
-            config["page_size"], config.get("location")
+            config["request_delay_seconds"], config["max_pages"],
+            config["page_size"], config.get("location"),
+            config.get("woolworths_category")
         )
         current, scrape_failures = scrape_with_fallback(
-            (("Coles", coles), ("Woolworths", woolworths)), config["queries"], previous
+            (("Coles", coles), ("Woolworths", woolworths)),
+            config["category_pages"], previous
         )
     current = {product_id: product for product_id, product in current.items()
                if is_allowed_product(product.get("name", ""), product.get("brand", ""))}

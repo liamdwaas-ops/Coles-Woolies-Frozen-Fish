@@ -1,65 +1,45 @@
-# Coles and Woolworths sauce product change monitor
+# Coles and Woolworths frozen seafood monitor
 
-This repository checks Coles and Woolworths once a week for products whose **name** matches one of these rules:
+This monitor enumerates SKUs from these retailer category pages, rather than selecting products with search keywords:
 
-- contains both whole words `pasta` and `sauce` (in any order)
-- contains both whole words `tomato` and `paste` (in any order)
-- contains the whole word `passata`
-- contains the whole word `pesto`
+- Woolworths: `https://www.woolworths.com.au/shop/browse/freezer/frozen-seafood`
+- Coles: `https://www.coles.com.au/browse/frozen/frozen-fish-seafood?sortBy=recommendedDescending`
 
-Products are excluded when the title contains the whole word `fresh`, when either the brand or title contains a configured ignored phrase, when their titles identify cooking utensils or decorative furniture, or when the retailer reports them as out of stock.
+It records new SKUs and changes to product name, price, promotions, pack size, image, availability and online-only status. Reports are grouped for readability, but grouping never determines inclusion: if a SKU is returned by the configured frozen-seafood category, it is monitored.
 
-It records product-name, current-price, pack-size, primary-image and **Online Only** status changes, plus newly listed matching products. A new flavour with a new SKU is reported as a **New product**; a flavour rename on an existing SKU is reported as **Name changed**. This avoids guessing whether marketing text represents a flavour. Online-only prices remain in the report and are visibly flagged.
+Each successful run stores a combined snapshot, a de-duplicated event history and an Excel workbook. A retailer access failure cannot erase the last verified snapshot. The first scheduled run sends the complete baseline; later emails contain only reportable changes. A promotion merely returning to full price remains in the audit trail but is suppressed from the email body.
 
-Each weekly email and the main Coles/Woolworths workbook sheets contain only SKUs that changed versus the previous successful weekly snapshot, with one row per changed SKU. Unchanged catalogue SKUs are omitted. A compact `Change Summary` column sits beside the linked product name and combines simultaneous changes using brief labels such as `Price`, `New`, `Image`, `Unavailable`, or `Restocked`. Before, after and image columns are intentionally omitted; the separate `Change History` sheet remains the audit trail across runs.
+## Schedule and recipient
 
-When a SKU was promotional in the previous weekly snapshot and has returned to full price, that SKU is retained in the workbook audit trail but omitted from the email body. If a run contains only promotion-ending changes, no email is sent.
+GitHub Actions runs at `20:00 UTC Tuesday`, exactly **06:00 AEST Wednesday** (fixed UTC+10). This is 07:00 in Sydney while AEDT applies. GitHub may start scheduled jobs a few minutes late.
 
-Current price, original price, promotional price and percentage discount have separate columns. These promotion fields are populated only when the retailer explicitly identifies a standard price reduction or multibuy offer.
+Emails are addressed to `liam.dewaas@simplot.com` from the configured Gmail account.
 
-Explicit multibuy offers such as `2 for $14.00` are recorded verbatim in the `Promotional Price` column. The discount percentage is calculated from the retailer-provided multibuy quantity and total against the current single-item price; no multibuy is inferred when the retailer does not provide an explicit offer.
+## Required repository secrets
 
-`Temporarily unavailable` products are shown once when they first enter that state, suppressed on subsequent runs, and shown again as `Back in stock` after availability returns. Other out-of-stock products are excluded.
+In **Settings → Secrets and variables → Actions**, add:
 
-Pricing requests for both retailers are fixed to the online delivery context for **Cheltenham VIC 3192**, configured in `config.json`.
+- `GMAIL_APP_PASSWORD`: Google App Password for `liamdwaas@gmail.com`.
+- `RETAIL_PROXY_URL`: Australian residential HTTPS proxy URL. Coles commonly rejects GitHub-hosted datacenter IPs.
+- `COLES_BUILD_ID`: optional fallback only; live category HTML is used directly by the current scraper.
 
-The first successful run emails the complete baseline once. Later runs send an email only when at least one new, previously unreported change exists. Product names in the HTML email and Excel workbook link to their Coles product pages. No-change runs send nothing. Removed or temporarily unavailable products are deliberately not reported because the requested change types do not include removals.
+Set **Settings → Actions → General → Workflow permissions** to **Read and write permissions** so the workflow can commit its state files. Never commit passwords or proxy credentials.
 
-## Schedule
+## Data integrity
 
-The workflow runs at `20:00 UTC Tuesday`, which is **06:00 AEST Wednesday**. Because AEST is a fixed UTC+10 offset, this is 07:00 in Sydney when daylight saving (AEDT) applies. GitHub Actions schedules can start a few minutes late under load.
+- SKU inclusion comes from the two configured category pages.
+- Pricing uses online delivery context for Cheltenham VIC 3192.
+- Empty, malformed or blocked category responses fail safely.
+- The same Australian proxy is used for both retailers when configured.
+- Deterministic event IDs prevent duplicate change emails.
+- Product links point to the retailer product pages.
 
-## Required GitHub repository setup
-
-1. Create a private GitHub repository and push this folder as its root.
-2. In **Settings → Secrets and variables → Actions**, add:
-   - `GMAIL_APP_PASSWORD`: a Google App Password for `liamdwaas@gmail.com` (never use or commit the normal Google password).
-   - `COLES_BUILD_ID`: optional fallback containing the current Coles Next.js `buildId`. The monitor first attempts automatic discovery. Add/update this only if a run says Coles blocked discovery.
-   - `RETAIL_PROXY_URL`: an Australian residential HTTPS proxy URL, including its provider-issued credentials. This is required on GitHub-hosted runners because Coles rejects GitHub datacenter IPs. Store it only as an Actions secret, for example in the provider's documented `http://user:password@host:port` format.
-3. In **Settings → Actions → General → Workflow permissions**, select **Read and write permissions** so the workflow can commit its history.
-4. Pushing the initial setup creates and emails the baseline. **Actions → Weekly Coles product monitor → Run workflow** remains available for diagnostics, but a manual run does not resend an existing baseline.
-
-Google App Passwords require 2-Step Verification. If Google Workspace policy blocks App Passwords, use an approved SMTP relay and adapt `send_email` in `coles_monitor/reporting.py`.
-
-## Data integrity behavior
-
-- A run where either retailer is blocked, empty, malformed or incomplete fails without replacing the last good combined snapshot or sending a partial report.
-- After a baseline exists, a temporarily blocked retailer retains its last verified records while the other retailer continues normally. The workflow emits a GitHub warning, never interprets the access failure as removals, and retries the retailer on the next scheduled run.
-- Coles' flag comes from `pricing.onlineSpecial`/an online promotion label; Woolworths' flag comes from `IsOnlineOnly`. The monitor does not infer this status from price differences.
-- Browser-fingerprinted sessions are used for compatibility with the retailers' public storefront data routes; no login, cart or checkout access is used.
-- When `RETAIL_PROXY_URL` is present, both retailers use the same Australian proxy so their Cheltenham-context data is fetched consistently. The secret is never logged or written to a snapshot.
-- Coles build-ID discovery is automatic. `config.json` also contains a last-known build ID verified from the live homepage on 2026-08-24, used only if homepage discovery is challenged; a stale ID makes the run fail safely rather than emit partial data.
-- Change events have deterministic IDs and are stored in `data/events.json`, preventing duplicate reports.
-- The complete audit history and current combined catalogue are kept in `data/coles-woolworths-sauce-change-history.xlsx` and uploaded as a workflow artifact.
-- Every search includes postcode `3192` and delivery context. Prices should be treated as online prices returned for that location, not as a claim about shelf prices at an unspecified physical store.
-
-## Local test
+## Local verification
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 python run_monitor.py --fixture tests/fixtures/week1.json --no-email
-python run_monitor.py --fixture tests/fixtures/week2.json --no-email
 ```
 
-The fixture names and URLs use the reserved `example.test` domain and are tests only; they are not Coles product claims.
+Live scraping may require the same Australian proxy used by the GitHub workflow.

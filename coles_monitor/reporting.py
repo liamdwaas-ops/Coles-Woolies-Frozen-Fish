@@ -15,7 +15,7 @@ HEADERS = ["Observed (UTC)", "Retailer", "Brand", "Product", "Change Summary",
            "Current Price (AUD)", "Original Price (AUD)", "Promotional Price (AUD)",
            "Discount", "Online Only", "Availability", "Size", "Product URL", "Event ID"]
 RETAILERS = ("Coles", "Woolworths")
-GROUPS = ("Tomato Paste", "Pasta Sauce", "Passata", "Pesto")
+GROUPS = ("Fish & Other Seafood", "Prawns & Shrimp", "Squid & Calamari", "Shellfish")
 PRODUCT_HEADERS = ["Product ID", "Brand", "Product", "Change Summary", "Current Price (AUD)",
                    "Original Price (AUD)", "Promotional Price (AUD)", "Discount",
                    "Online Only", "Availability", "Size", "Product URL"]
@@ -213,7 +213,7 @@ def send_email(sender, recipient, app_password, events, workbook_path, baseline=
     with open(workbook_path, "rb") as handle:
         msg.add_attachment(handle.read(), maintype="application",
                            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           filename="coles-woolworths-sauce-change-history.xlsx")
+                           filename="coles-woolworths-frozen-seafood-change-history.xlsx")
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
         smtp.login(sender, app_password)
         smtp.send_message(msg)

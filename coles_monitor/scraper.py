@@ -3,7 +3,7 @@ import json
 import os
 import re
 import time
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from curl_cffi import requests
 
@@ -12,7 +12,7 @@ from .promotions import find_multibuy_text, multibuy_unit_price
 
 
 BASE_URL = "https://www.coles.com.au"
-USER_AGENT = "Mozilla/5.0 (compatible; ColesProductChangeMonitor/1.0; personal-use)"
+USER_AGENT = "Mozilla/5.0 (compatible; FrozenSeafoodMonitor/1.0; personal-use)"
 
 
 class ScrapeError(RuntimeError):
@@ -51,8 +51,7 @@ class ColesScraper:
         for _attempt in range(5):
             self.session = self._new_session()
             self.session.headers.update({"Accept": "application/json,text/html"})
-            for path in ("/", "/search/products?q=pesto",
-                         "/browse/pantry/sauces/pizza-pasta"):
+            for path in ("/", "/browse/frozen/frozen-fish-seafood"):
                 try:
                     text = self._get(
                         BASE_URL + path,
@@ -158,11 +157,14 @@ class ColesScraper:
             "product_url": product_url, "source": product_url,
         }
 
-    def search(self, query):
-        build_id = self.discover_build_id()
+    def scrape(self, category_url):
+        """Enumerate SKUs from the supplied Coles browse page, page by page."""
         found = {}
+        parsed = urlparse(category_url)
+        category_path = parsed.path
+        base_query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
         for page in range(1, self.max_pages + 1):
-            params = {"q": query}
+            params = dict(base_query)
             if self.location.get("postcode"):
                 params["postcode"] = self.location["postcode"]
             if self.location.get("state"):
@@ -171,21 +173,32 @@ class ColesScraper:
                 params["contextMode"] = self.location["context_mode"]
             if page > 1:
                 params["page"] = page
-            url = f"{BASE_URL}/_next/data/{quote(build_id, safe='')}/en/search/products.json?{urlencode(params)}"
+            page_url = BASE_URL + category_path
+            if params:
+                page_url += "?" + urlencode(params)
+            match = None
+            for attempt in range(5):
+                response = self._get(page_url, headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                })
+                match = re.search(
+                    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+                    response.text, re.S,
+                )
+                if match:
+                    break
+                self.session = self._new_session()
+                time.sleep(2 * (attempt + 1))
+            if not match:
+                raise ScrapeError(
+                    f"Coles category page {page} did not contain its product data."
+                )
             try:
-                response = self._get(url)
-            except requests.RequestsError as exc:
-                status = getattr(getattr(exc, "response", None), "status_code", None)
-                if status == 404:
-                    build_id = self.discover_build_id(force=True)
-                    url = f"{BASE_URL}/_next/data/{quote(build_id, safe='')}/en/search/products.json?{urlencode(params)}"
-                    response = self._get(url)
-                else:
-                    raise
-            content_type = response.headers.get("content-type", "")
-            if "json" not in content_type.lower():
-                raise ScrapeError("Coles returned a bot-protection page instead of product JSON. No report was generated.")
-            results, metadata = self._find_results(response.json())
+                payload = json.loads(html.unescape(match.group(1)))
+            except (ValueError, TypeError) as exc:
+                raise ScrapeError("Coles category product data was malformed.") from exc
+            page_props = payload.get("props", {}).get("pageProps", payload)
+            results, metadata = self._find_results({"pageProps": page_props})
             if not results:
                 break
             for raw in results:
@@ -201,17 +214,9 @@ class ColesScraper:
             if len(results) < self.page_size:
                 break
             time.sleep(self.delay)
-        return found
-
-    def scrape(self, queries):
-        products = {}
-        for index, query in enumerate(queries):
-            products.update(self.search(query))
-            if index + 1 < len(queries):
-                time.sleep(self.delay)
-        if not products:
+        if not found:
             raise ScrapeError("Coles returned no matching products. Snapshot was not replaced.")
-        missing = [pid for pid, p in products.items() if not p["name"] or not p["product_url"]]
+        missing = [pid for pid, p in found.items() if not p["name"] or not p["product_url"]]
         if missing:
             raise ScrapeError(f"Coles returned incomplete records for {len(missing)} products. Snapshot was not replaced.")
-        return products
+        return found

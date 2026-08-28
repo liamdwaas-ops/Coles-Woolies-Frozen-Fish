@@ -1,4 +1,4 @@
-name: Weekly Coles product monitor
+name: Weekly frozen seafood monitor
 
 on:
   push:
@@ -22,7 +22,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: weekly-coles-monitor
+  group: weekly-frozen-seafood-monitor
   cancel-in-progress: false
 
 jobs:
@@ -111,7 +111,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           COLES_BUILD_ID: ${{ secrets.COLES_BUILD_ID }}
           RETAIL_PROXY_URL: ${{ secrets.RETAIL_PROXY_URL }}
-        run: python run_monitor.py
+        run: python run_monitor.py --email-baseline
 
       - name: Commit updated snapshot and history
         if: ${{ github.event_name != 'push' }}
@@ -120,16 +120,16 @@ jobs:
             echo "No state changes to commit."
             exit 0
           fi
-          git config user.name "coles-monitor[bot]"
-          git config user.email "coles-monitor[bot]@users.noreply.github.com"
-          git add data/current.json data/events.json data/coles-woolworths-sauce-change-history.xlsx
-          git commit -m "Update Coles product snapshot"
+          git config user.name "frozen-seafood-monitor[bot]"
+          git config user.email "frozen-seafood-monitor[bot]@users.noreply.github.com"
+          git add data/current.json data/events.json data/coles-woolworths-frozen-seafood-change-history.xlsx
+          git commit -m "Update frozen seafood product snapshot"
           git push
 
       - name: Upload Excel history
         if: ${{ github.event_name != 'push' }}
         uses: actions/upload-artifact@v4
         with:
-          name: coles-woolworths-sauce-change-history
-          path: data/coles-woolworths-sauce-change-history.xlsx
+          name: coles-woolworths-frozen-seafood-change-history
+          path: data/coles-woolworths-frozen-seafood-change-history.xlsx
           if-no-files-found: error

@@ -1,6 +1,7 @@
 import time
 import os
-from urllib.parse import quote_plus
+import json
+from urllib.parse import urlparse
 
 from curl_cffi import requests
 from curl_cffi.const import CurlHttpVersion
@@ -11,15 +12,17 @@ from .scraper import ScrapeError, USER_AGENT
 
 
 BASE_URL = "https://www.woolworths.com.au"
-SEARCH_URL = BASE_URL + "/apis/ui/Search/products"
+BROWSE_URL = BASE_URL + "/apis/ui/browse/category"
 
 
 class WoolworthsScraper:
-    def __init__(self, delay=1.0, max_pages=20, page_size=36, location=None):
+    def __init__(self, delay=1.0, max_pages=20, page_size=36, location=None,
+                 category=None):
         self.delay = delay
         self.max_pages = max_pages
         self.page_size = min(page_size, 36)
         self.location = location or {}
+        self.category = category or {}
         proxy_url = os.getenv("RETAIL_PROXY_URL", "").strip()
         session_args = {"impersonate": "chrome"}
         if proxy_url:
@@ -113,67 +116,72 @@ class WoolworthsScraper:
             "image_url": image, "product_url": product_url, "source": product_url,
         }
 
-    def search(self, query):
+    @staticmethod
+    def _is_frozen_seafood(raw):
+        """Use Woolworths' own PIES category assignment, not title keywords."""
+        attributes = raw.get("AdditionalAttributes") or {}
+        categories = attributes.get("piescategorynamesjson") or "[]"
+        if isinstance(categories, str):
+            try:
+                categories = json.loads(categories)
+            except ValueError:
+                categories = [categories]
+        return any(normalize(value).lower() == "frozen seafood" for value in categories)
+
+    def scrape(self, category_url):
+        """Enumerate only products returned for the supplied browse category."""
         found = {}
         postcode = self.location.get("postcode", "")
         if not self.primed:
             try:
-                self.session.get(
-                    BASE_URL + "/shop/search/products?searchTerm=pesto", timeout=45
-                ).raise_for_status()
+                self.session.get(category_url, timeout=45).raise_for_status()
                 self.primed = True
             except requests.RequestsError as exc:
                 raise ScrapeError(f"Woolworths session setup failed: {exc}") from exc
         for page in range(1, self.max_pages + 1):
-            location_url = f"/shop/search/products?searchTerm={quote_plus(query)}"
-            if postcode:
-                location_url += f"&postcode={quote_plus(postcode)}"
+            location_url = urlparse(category_url).path
             body = {
-                "Filters": [], "IsSpecial": False, "Location": location_url,
-                "PageNumber": page, "PageSize": self.page_size, "SearchTerm": query,
-                "SortType": "TraderRelevance", "IsRegisteredRewardCardPromotion": False,
-                "ExcludeSearchTypes": ["UntraceableV2"], "GpBoost": 0,
-                "GroupEdmVariants": False,
+                "categoryId": self.category.get("category_id", "VSC_171"),
+                "pageNumber": page, "pageSize": self.page_size,
+                "sortType": "TraderRelevance", "url": location_url,
+                "location": location_url, "formatObject": "{}",
+                "isSpecial": False, "isBundle": False, "filters": [],
+                "token": "", "sampledResults": False,
             }
             if postcode:
-                body["Postcode"] = postcode
+                body["postcode"] = postcode
             try:
                 response = self.session.post(
-                    SEARCH_URL, json=body, timeout=40,
+                    BROWSE_URL, json=body, timeout=40,
                     http_version=CurlHttpVersion.V1_1,
                     headers={"Referer": BASE_URL + location_url,
                              "X-Requested-With": "XMLHttpRequest"},
                 )
                 response.raise_for_status()
             except requests.RequestsError as exc:
-                raise ScrapeError(f"Woolworths search failed: {exc}") from exc
+                raise ScrapeError(f"Woolworths category request failed: {exc}") from exc
             if "json" not in response.headers.get("content-type", "").lower():
                 raise ScrapeError("Woolworths returned a non-JSON response. No report was generated.")
-            products = self._find_products(response.json())
+            payload = response.json()
+            products = self._find_products(payload)
             if not products:
                 break
             for raw in products:
                 product_id, product = self._product(raw)
-                if (product_id != "woolworths:" and
-                        is_allowed_product(product["name"], product["brand"])):
+                if product_id != "woolworths:" and self._is_frozen_seafood(raw):
                     found[product_id] = product
+            total = payload.get("TotalRecordCount")
+            if total is not None and page * self.page_size >= int(total):
+                break
             if len(products) < self.page_size:
                 break
             time.sleep(self.delay)
-        return found
-
-    def scrape(self, queries):
-        products = {}
-        for index, query in enumerate(queries):
-            products.update(self.search(query))
-            if index + 1 < len(queries):
-                time.sleep(self.delay)
-        if not products:
+        if not found:
             raise ScrapeError("Woolworths returned no matching products. Snapshot was not replaced.")
-        missing = [pid for pid, p in products.items() if not p["name"] or not p["product_url"]]
+        missing = [pid for pid, p in found.items() if not p["name"] or not p["product_url"]]
         if missing:
             raise ScrapeError(
                 f"Woolworths returned incomplete records for {len(missing)} products. "
                 "Snapshot was not replaced."
             )
-        return products
+        return found

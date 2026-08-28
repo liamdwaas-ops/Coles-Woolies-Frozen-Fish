@@ -6,44 +6,24 @@ def normalize(value):
 
 
 def is_wanted_name(name):
-    return keyword_group(name) is not None
+    return bool(normalize(name))
 
 
 def keyword_group(name):
-    """Return one exclusive report group, ordered from most specific to broadest."""
+    """Group category-page SKUs for readable reports; never decide inclusion."""
     words = set(re.findall(r"[a-z]+", normalize(name).lower()))
-    if "tomato" in words and "paste" in words:
-        return "Tomato Paste"
-    if "pasta" in words and "sauce" in words:
-        return "Pasta Sauce"
-    if "passata" in words:
-        return "Passata"
-    if "pesto" in words:
-        return "Pesto"
-    return None
+    if words.intersection({"prawn", "prawns", "shrimp"}):
+        return "Prawns & Shrimp"
+    if words.intersection({"squid", "calamari", "octopus"}):
+        return "Squid & Calamari"
+    if words.intersection({"mussel", "mussels", "scallop", "scallops", "oyster", "oysters"}):
+        return "Shellfish"
+    return "Fish & Other Seafood"
 
 
 def is_allowed_product(name, brand=""):
-    normalized_name = normalize(name).lower()
-    words = set(re.findall(r"[a-z]+", normalize(name).lower()))
-    excluded_brands = {
-        "continental", "sirena", "capsicana", "latina", "san remo", "tandaco",
-        "my muscle", "my muscle chef", "coles made easy", "fitness outcomes",
-        "coles kitchen", "black swan", "rana", "red rock deli", "coles perform",
-        "cucina", "youfoodz", "prepara", "porto", "tovolo", "hot shot", "easy eats",
-    }
-    excluded_non_food_words = {
-        "chopper", "mandoline", "grater", "peeler", "utensil", "knife", "knives",
-        "scissors", "spatula", "spoon", "ladle", "tongs", "whisk", "colander",
-        "strainer", "cookware", "rug", "cushion", "chair", "stool", "lamp", "vase",
-        "planter", "furniture",
-    }
-    excluded_title_phrases = excluded_brands | {"manual food chopper", "throw rug"}
-    return (is_wanted_name(name) and "fresh" not in words and
-            not words.intersection(excluded_non_food_words) and
-            not any(re.search(r"\b" + re.escape(phrase) + r"\b", normalized_name)
-                    for phrase in excluded_title_phrases) and
-            normalize(brand).lower() not in excluded_brands)
+    # Membership of the supplied retailer category pages is the inclusion rule.
+    return bool(normalize(name))
 
 
 def split_name_size(name, explicit_size=""):
