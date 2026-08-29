@@ -13,6 +13,7 @@ on:
       - ".send-latest-once"
       - ".send-test-once"
       - ".send-multibuy-test-once"
+      - ".run-live-test-once"
   schedule:
     # 06:00 AEST every Wednesday (fixed UTC+10; 07:00 local during AEDT).
     - cron: "0 20 * * 2"
@@ -106,7 +107,7 @@ jobs:
           git push
 
       - name: Scrape, compare, record and notify
-        if: ${{ github.event_name != 'push' }}
+        if: ${{ github.event_name != 'push' || hashFiles('.run-live-test-once') != '' }}
         env:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           COLES_BUILD_ID: ${{ secrets.COLES_BUILD_ID }}
@@ -114,15 +115,18 @@ jobs:
         run: python run_monitor.py --email-baseline
 
       - name: Commit updated snapshot and history
-        if: ${{ github.event_name != 'push' }}
+        if: ${{ github.event_name != 'push' || hashFiles('.run-live-test-once') != '' }}
         run: |
-          if git diff --quiet -- data; then
+          if git diff --quiet -- data && [ ! -f .run-live-test-once ]; then
             echo "No state changes to commit."
             exit 0
           fi
           git config user.name "frozen-seafood-monitor[bot]"
           git config user.email "frozen-seafood-monitor[bot]@users.noreply.github.com"
           git add data/current.json data/events.json data/coles-woolworths-frozen-seafood-change-history.xlsx
+          if [ -f .run-live-test-once ]; then
+            git rm .run-live-test-once
+          fi
           git commit -m "Update frozen seafood product snapshot"
           git push
 
