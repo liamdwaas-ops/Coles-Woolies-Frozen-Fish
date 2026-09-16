@@ -105,12 +105,14 @@ def compare(previous, current, observed_at, seen_event_ids=()):
         old = previous.get(product_id)
         current_status = product.get("availability_state", "in_stock")
         old_status = old.get("availability_state", "in_stock") if old else None
-        if current_status == "out_of_stock":
-            continue
-        if current_status == "temporary_unavailable":
-            if old_status == "temporary_unavailable":
+        if current_status in {"temporary_unavailable", "out_of_stock"}:
+            if old_status == current_status:
                 continue
-            candidates = [("Temporarily unavailable", old_status or "", "Temporarily unavailable")]
+            change_name = ("Temporarily unavailable"
+                           if current_status == "temporary_unavailable"
+                           else "Unavailable")
+            candidates = [(change_name, old_status or "",
+                           product.get("availability_label", change_name))]
         elif old_status in {"temporary_unavailable", "out_of_stock"}:
             candidates = [("Back in stock", old.get("availability_label", old_status),
                            product.get("availability_label", "Available"))]
@@ -208,6 +210,7 @@ def visible_products(previous, current, first_run=False):
         old_status = old.get("availability_state", "in_stock") if old else None
         if status == "in_stock":
             visible[product_id] = product
-        elif status == "temporary_unavailable" and (first_run or old_status != status):
+        elif status in {"temporary_unavailable", "out_of_stock"} and \
+                (first_run or old_status != status):
             visible[product_id] = product
     return visible

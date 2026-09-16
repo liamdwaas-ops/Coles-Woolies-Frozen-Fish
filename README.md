@@ -5,7 +5,7 @@ This repository checks these retailer category pages once a week:
 - Coles: `https://www.coles.com.au/browse/frozen/frozen-fish-seafood?sortBy=recommendedDescending`
 - Woolworths: `https://www.woolworths.com.au/shop/browse/freezer/frozen-seafood`
 
-Every page is retrieved and every named SKU returned by the configured retailer category is included under **Frozen Seafood**. Product-title keywords and brand exclusions are not used; membership of the two supplied category pages is the selection rule. Products reported as out of stock remain subject to the same availability handling as the sauces monitor.
+Every page is retrieved and every named SKU returned by the configured retailer category is included under **Frozen Seafood**. Product-title keywords and brand exclusions are not used; membership of the two supplied category pages is the selection rule.
 
 It records product-name, current-price, pack-size, ordered product-image and **Online Only** status changes, plus newly listed matching products. Image changes identify the affected retailer image position, such as `Image 2 changed` or `Image 4 added`. A new flavour with a new SKU is reported as **New**; a flavour rename on an existing SKU is reported as **Name**. This avoids guessing whether marketing text represents a flavour. Online-only promotions remain in the report and are labelled in the `Current Price` cell.
 
@@ -17,11 +17,13 @@ Current price, original price and percentage discount have separate columns. The
 
 Explicit multibuy offers such as `2 for $14.00` are recorded verbatim in the `Current Price` column beside the single-item price. The discount percentage is calculated from the retailer-provided multibuy quantity and total against the current single-item price; no multibuy is inferred when the retailer does not provide an explicit offer.
 
-`Temporarily unavailable` products are shown once when they first enter that state, suppressed on subsequent runs, and shown again as `Back in stock` after availability returns. Other out-of-stock products are excluded.
+`Temporarily unavailable` and `Out of stock` products are reported once when both locations first agree on that state, suppressed on subsequent unchanged runs, and shown again as `Back in stock` only after both locations return to full availability.
 
-The configured location is **Cheltenham VIC 3192**. Coles resolves that locality through its public location service and uses the returned fulfilment store for catalogue pricing. Woolworths receives postcode 3192 in its anonymous category request; because that response does not identify the selected store, the monitor describes those values as Woolworths online prices rather than claiming a particular store's shelf price.
+The primary configured location is **Cheltenham VIC 3192**. Coles resolves that locality through its public location service and uses the returned fulfilment store for catalogue pricing. Woolworths receives postcode 3192 in its anonymous category request; because that response does not identify the selected store, the monitor describes those values as Woolworths online prices rather than claiming a particular store's shelf price.
 
-The first successful run emails the complete baseline once. Later runs send an email only when at least one new, previously unreported change exists. Product names in the HTML email and Excel workbook link to their Coles product pages. No-change runs send nothing. Removed or temporarily unavailable products are deliberately not reported because the requested change types do not include removals.
+Availability changes use **Broadway NSW 2007** as a verification location. Coles resolves this to its Broadway fulfilment store (`839`); Woolworths receives postcode 2007. Broadway is queried only when Cheltenham currently has an availability issue or the prior agreed state had an issue. An unavailable/restocked state is accepted only when both locations return the same state. If the locations disagree or report different issue types, the last agreed availability is carried forward, so no availability or restock change is emailed. A failed backup check retains the retailer's last verified snapshot.
+
+The first successful run emails the complete baseline once. Later runs send an email only when at least one new, previously unreported change exists. Product names in the HTML email and Excel workbook link to their retailer product pages. No-change runs send nothing. Products removed entirely from a category are not treated as availability changes because neither location supplied a current product record.
 
 ## Schedule
 

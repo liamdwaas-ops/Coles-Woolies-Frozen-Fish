@@ -8,7 +8,8 @@ from coles_monitor.reporting import (email_visible_events, render_baseline_html,
 from openpyxl import load_workbook
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from run_monitor import configured_scrapers, load_json, scrape_with_fallback
+from run_monitor import (configured_backup_scrapers, configured_scrapers, load_json,
+                         reconcile_availability, scrape_with_fallback)
 from coles_monitor.scraper import ColesScraper
 from coles_monitor.woolworths import WoolworthsScraper
 
@@ -131,6 +132,91 @@ class ScrapeFallbackTests(unittest.TestCase):
         self.assertNotIn("woolworths:1", current)
         self.assertIn("woolworths:2", current)
         self.assertEqual(len(failures), 1)
+
+
+class TwoLocationAvailabilityTests(unittest.TestCase):
+    @staticmethod
+    def product(state, label=None):
+        labels = {"in_stock": "Available", "temporary_unavailable": "Temporarily unavailable",
+                  "out_of_stock": "Out of stock"}
+        return {"retailer": "Coles", "name": "Frozen Hoki", "price": 8.0,
+                "size": "500g", "product_url": "https://example.test/hoki",
+                "availability_state": state,
+                "availability_label": label or labels[state]}
+
+    def test_matching_issue_in_both_suburbs_is_retained(self):
+        primary = {"coles:1": self.product("temporary_unavailable")}
+        backup = {"coles:1": self.product("temporary_unavailable")}
+        result = reconcile_availability(primary, backup, {})
+        self.assertEqual(result["coles:1"]["availability_state"],
+                         "temporary_unavailable")
+
+    def test_matching_no_availability_is_reported_once(self):
+        previous = {"coles:1": self.product("in_stock")}
+        primary = {"coles:1": self.product("out_of_stock")}
+        backup = {"coles:1": self.product("out_of_stock")}
+        result = reconcile_availability(primary, backup, previous)
+        self.assertEqual(compare(previous, result, "now")[0]["change_type"],
+                         "Unavailable")
+        self.assertEqual(compare(result, result, "later"), [])
+
+    def test_one_available_suburb_suppresses_new_issue(self):
+        previous = {"coles:1": self.product("in_stock")}
+        primary = {"coles:1": self.product("temporary_unavailable")}
+        backup = {"coles:1": self.product("in_stock")}
+        result = reconcile_availability(primary, backup, previous)
+        self.assertEqual(result["coles:1"]["availability_state"], "in_stock")
+        self.assertEqual(compare(previous, result, "now"), [])
+
+    def test_different_issue_types_are_treated_as_no_change(self):
+        previous = {"coles:1": self.product("temporary_unavailable")}
+        primary = {"coles:1": self.product("temporary_unavailable")}
+        backup = {"coles:1": self.product("out_of_stock")}
+        result = reconcile_availability(primary, backup, previous)
+        self.assertEqual(result["coles:1"]["availability_state"],
+                         "temporary_unavailable")
+        self.assertEqual(compare(previous, result, "now"), [])
+
+    def test_restock_requires_both_suburbs_to_be_available(self):
+        previous = {"coles:1": self.product("temporary_unavailable")}
+        primary = {"coles:1": self.product("in_stock")}
+        both_available = reconcile_availability(
+            primary, {"coles:1": self.product("in_stock")}, previous)
+        self.assertEqual(compare(previous, both_available, "now")[0]["change_type"],
+                         "Restocked")
+
+        disagreement = reconcile_availability(
+            primary, {"coles:1": self.product("temporary_unavailable")}, previous)
+        self.assertEqual(disagreement["coles:1"]["availability_state"],
+                         "temporary_unavailable")
+        self.assertEqual(compare(previous, disagreement, "later"), [])
+
+    def test_backup_scrape_is_lazy_and_only_used_for_availability_verification(self):
+        class StaticScraper:
+            def __init__(self, products):
+                self.products = products
+                self.calls = 0
+
+            def scrape(self, queries):
+                self.calls += 1
+                return self.products
+
+        primary = StaticScraper({"coles:1": self.product("in_stock")})
+        backup = StaticScraper({"coles:1": self.product("in_stock")})
+        scrape_with_fallback((("Coles", primary),), [], {}, (("Coles", backup),))
+        self.assertEqual(backup.calls, 0)
+
+        primary.products = {"coles:1": self.product("temporary_unavailable")}
+        scrape_with_fallback((("Coles", primary),), [], {}, (("Coles", backup),))
+        self.assertEqual(backup.calls, 1)
+
+    def test_broadway_backup_location_is_configured(self):
+        config = load_json(Path(__file__).resolve().parents[1] / "config.json", {})
+        backups = dict(configured_backup_scrapers(config))
+        self.assertEqual(backups["Coles"].location["suburb"], "Broadway")
+        self.assertEqual(backups["Coles"].location["postcode"], "2007")
+        self.assertEqual(backups["Coles"]._resolve_store_id(), "839")
+        self.assertEqual(backups["Woolworths"].location["state"], "NSW")
 
 
 class LocationTests(unittest.TestCase):
@@ -386,10 +472,11 @@ class AvailabilityLifecycleTests(unittest.TestCase):
         self.assertEqual(back[0]["change_type"], "Restocked")
         self.assertEqual(visible_products(temporary, available), available)
 
-    def test_out_of_stock_is_hidden(self):
+    def test_out_of_stock_is_reported_once_then_suppressed(self):
         out = {"1": {"name": "A Passata", "availability_state": "out_of_stock"}}
-        self.assertEqual(compare({}, out, "now"), [])
-        self.assertEqual(visible_products({}, out), {})
+        self.assertEqual(compare({}, out, "now")[0]["change_type"], "Unavailable")
+        self.assertEqual(compare(out, out, "later"), [])
+        self.assertEqual(visible_products({}, out), out)
 
 
 class ChangeTests(unittest.TestCase):

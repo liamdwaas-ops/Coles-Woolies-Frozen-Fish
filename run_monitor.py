@@ -17,13 +17,65 @@ ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 
 
-def scrape_with_fallback(scrapers, queries, previous):
+def _needs_backup_availability_check(products, previous, retailer):
+    for product_id, product in products.items():
+        old = previous.get(product_id, {})
+        if (product.get("availability_state", "in_stock") != "in_stock" or
+                (old.get("retailer") == retailer and
+                 old.get("availability_state", "in_stock") != "in_stock")):
+            return True
+    return False
+
+
+def reconcile_availability(primary, backup, previous):
+    """Require matching Cheltenham/Broadway states before changing availability."""
+    reconciled = {}
+    for product_id, product in primary.items():
+        current = dict(product)
+        old = previous.get(product_id)
+        primary_state = product.get("availability_state", "in_stock")
+        old_state = old.get("availability_state", "in_stock") if old else "in_stock"
+        if primary_state == "in_stock" and old_state == "in_stock":
+            reconciled[product_id] = current
+            continue
+
+        backup_product = backup.get(product_id)
+        backup_state = (backup_product.get("availability_state", "in_stock")
+                        if backup_product else "out_of_stock")
+        if primary_state == backup_state:
+            # Matching issues may be reported; matching availability may be a restock.
+            reconciled[product_id] = current
+            continue
+
+        # A disagreement must never create an availability or restock event. Carry
+        # forward the last agreed state while retaining current price/product data.
+        current["availability_state"] = old_state
+        current["availability_label"] = (
+            old.get("availability_label", "Available") if old else "Available"
+        )
+        reconciled[product_id] = current
+    return reconciled
+
+
+def scrape_with_fallback(scrapers, queries, previous, backup_scrapers=()):
     """Scrape retailers independently, retaining last verified data on access failures."""
     current = {}
     failures = []
+    backups = dict(backup_scrapers)
     for retailer, scraper in scrapers:
         try:
-            current.update(scraper.scrape(queries))
+            retailer_products = scraper.scrape(queries)
+            if _needs_backup_availability_check(retailer_products, previous, retailer):
+                if retailer not in backups:
+                    raise RuntimeError(
+                        f"{retailer} needs Broadway availability verification, but no backup "
+                        "scraper is configured"
+                    )
+                backup_products = backups[retailer].scrape(queries)
+                retailer_products = reconcile_availability(
+                    retailer_products, backup_products, previous
+                )
+            current.update(retailer_products)
         except Exception as exc:
             retained = {product_id: product for product_id, product in previous.items()
                         if product.get("retailer") == retailer}
@@ -51,22 +103,31 @@ def save_json(path, value):
     temp.replace(path)
 
 
-def configured_scrapers(config):
+def configured_scrapers(config, location=None):
     category_urls = config.get("category_urls", {})
     max_pages = config.get("max_pages_per_category",
                            config.get("max_pages_per_query", 30))
+    selected_location = location or config.get("location")
     coles = ColesScraper(
         config["request_delay_seconds"], max_pages,
-        config["page_size"], config.get("location"),
+        config["page_size"], selected_location,
         config.get("coles_verified_build_id_fallback", ""),
         category_urls.get("Coles", "")
     )
     woolworths = WoolworthsScraper(
         config["request_delay_seconds"], max_pages,
-        config["page_size"], config.get("location"),
+        config["page_size"], selected_location,
         category_urls.get("Woolworths", "")
     )
     return coles, woolworths
+
+
+def configured_backup_scrapers(config):
+    location = config.get("availability_backup_location")
+    if not location:
+        return ()
+    coles, woolworths = configured_scrapers(config, location)
+    return (("Coles", coles), ("Woolworths", woolworths))
 
 
 def main():
@@ -107,15 +168,16 @@ def main():
     history = consolidate_events(load_json(DATA / "events.json", []))
     workbook_path = DATA / "coles-woolworths-frozen-seafood-change-history.xlsx"
     if args.send_live_baseline_test:
-        live = {}
-        counts = {}
-        for retailer, scraper in zip(("Coles", "Woolworths"),
-                                     configured_scrapers(config)):
-            products = scraper.scrape([])
-            if not products:
-                raise RuntimeError(f"{retailer} returned no products for the live test")
-            counts[retailer] = len(products)
-            live.update(products)
+        primary_scrapers = tuple(zip(("Coles", "Woolworths"),
+                                     configured_scrapers(config)))
+        live, failures = scrape_with_fallback(
+            primary_scrapers, [], {}, configured_backup_scrapers(config)
+        )
+        if failures:
+            raise RuntimeError("; ".join(failures))
+        counts = {retailer: sum(1 for product in live.values()
+                                if product.get("retailer") == retailer)
+                  for retailer in ("Coles", "Woolworths")}
         live = {product_id: {**product, "product_id": product_id}
                 for product_id, product in live.items()
                 if is_allowed_product(product.get("name", ""), product.get("brand", ""),
@@ -182,7 +244,8 @@ def main():
     else:
         coles, woolworths = configured_scrapers(config)
         current, scrape_failures = scrape_with_fallback(
-            (("Coles", coles), ("Woolworths", woolworths)), [], previous
+            (("Coles", coles), ("Woolworths", woolworths)), [], previous,
+            configured_backup_scrapers(config)
         )
     current = {product_id: product for product_id, product in current.items()
                if is_allowed_product(product.get("name", ""), product.get("brand", ""),
