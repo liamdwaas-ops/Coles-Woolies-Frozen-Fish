@@ -1,16 +1,12 @@
 {
-  "category_pages": {
+  "retailers": ["Coles", "Woolworths"],
+  "category_urls": {
     "Coles": "https://www.coles.com.au/browse/frozen/frozen-fish-seafood?sortBy=recommendedDescending",
     "Woolworths": "https://www.woolworths.com.au/shop/browse/freezer/frozen-seafood"
   },
-  "woolworths_category": {
-    "category_id": "1_ACA2FC2",
-    "fallback_slug": "frozen-fish"
-  },
-  "retailers": ["Coles", "Woolworths"],
-  "coles_verified_build_id_fallback": "20260825.4-04e74006a8bbaa6cbf7882b792617e5c7de5081a",
+  "coles_verified_build_id_fallback": "20260901.2-5f6f75a2b407f45bee8e67c4e72ffea1e3b9ff91",
   "page_size": 48,
-  "max_pages": 50,
+  "max_pages_per_category": 30,
   "request_delay_seconds": 1.0,
   "location": {
     "suburb": "Cheltenham",

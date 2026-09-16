@@ -17,13 +17,13 @@ ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 
 
-def scrape_with_fallback(scrapers, category_pages, previous):
+def scrape_with_fallback(scrapers, queries, previous):
     """Scrape retailers independently, retaining last verified data on access failures."""
     current = {}
     failures = []
     for retailer, scraper in scrapers:
         try:
-            current.update(scraper.scrape(category_pages[retailer]))
+            current.update(scraper.scrape(queries))
         except Exception as exc:
             retained = {product_id: product for product_id, product in previous.items()
                         if product.get("retailer") == retailer}
@@ -51,23 +51,88 @@ def save_json(path, value):
     temp.replace(path)
 
 
+def configured_scrapers(config):
+    category_urls = config.get("category_urls", {})
+    max_pages = config.get("max_pages_per_category",
+                           config.get("max_pages_per_query", 30))
+    coles = ColesScraper(
+        config["request_delay_seconds"], max_pages,
+        config["page_size"], config.get("location"),
+        config.get("coles_verified_build_id_fallback", ""),
+        category_urls.get("Coles", "")
+    )
+    woolworths = WoolworthsScraper(
+        config["request_delay_seconds"], max_pages,
+        config["page_size"], config.get("location"),
+        category_urls.get("Woolworths", "")
+    )
+    return coles, woolworths
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-email", action="store_true")
     parser.add_argument("--email-baseline", action="store_true")
     parser.add_argument("--send-existing-baseline", action="store_true")
+    parser.add_argument("--send-live-baseline-test", action="store_true",
+                        help="Scrape both retailers and email a test baseline without saving it")
     parser.add_argument("--send-latest-events", action="store_true")
     parser.add_argument("--send-multibuy-test", action="store_true")
+    parser.add_argument("--source-smoke", action="store_true",
+                        help="Validate both live category sources without writing or emailing")
     parser.add_argument("--reset-baseline", action="store_true",
                         help="Adopt the current catalogue without recording schema/filter changes")
     parser.add_argument("--fixture", help="Use a local JSON product snapshot (tests only)")
     args = parser.parse_args()
     config = load_json(ROOT / "config.json", {})
+    if args.source_smoke:
+        counts = {}
+        failures = {}
+        for retailer, scraper in zip(("Coles", "Woolworths"),
+                                     configured_scrapers(config)):
+            try:
+                products = scraper.scrape([])
+                counts[retailer] = len(products)
+            except Exception as exc:
+                failures[retailer] = f"{type(exc).__name__}: {exc}"
+        result = {"source_smoke": counts, "failures": failures}
+        print(json.dumps(result, sort_keys=True))
+        if failures:
+            raise RuntimeError(json.dumps(result, sort_keys=True))
+        return
     previous = {product_id: product for product_id, product in
                 load_json(DATA / "current.json", {}).items()
-                if is_allowed_product(product.get("name", ""), product.get("brand", ""))}
+                if is_allowed_product(product.get("name", ""), product.get("brand", ""),
+                                      product.get("category_group", ""))}
     history = consolidate_events(load_json(DATA / "events.json", []))
     workbook_path = DATA / "coles-woolworths-frozen-seafood-change-history.xlsx"
+    if args.send_live_baseline_test:
+        live = {}
+        counts = {}
+        for retailer, scraper in zip(("Coles", "Woolworths"),
+                                     configured_scrapers(config)):
+            products = scraper.scrape([])
+            if not products:
+                raise RuntimeError(f"{retailer} returned no products for the live test")
+            counts[retailer] = len(products)
+            live.update(products)
+        live = {product_id: {**product, "product_id": product_id}
+                for product_id, product in live.items()
+                if is_allowed_product(product.get("name", ""), product.get("brand", ""),
+                                      product.get("category_group", ""))}
+        baseline = visible_products({}, live, True)
+        if not baseline:
+            raise RuntimeError("No in-stock or newly unavailable products remained for the test")
+        write_workbook(workbook_path, history, baseline,
+                       report_events=list(baseline.values()))
+        password = os.environ.get("GMAIL_APP_PASSWORD", "")
+        if not password:
+            raise RuntimeError("GMAIL_APP_PASSWORD is required to send the live baseline test")
+        send_email(config["sender"], config["recipient"], password, [], workbook_path,
+                   baseline=baseline, test=True)
+        print(json.dumps({"live_baseline_email_products": len(baseline),
+                          "source_products": counts}, sort_keys=True))
+        return
     if args.send_multibuy_test:
         test_events = []
         observed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -111,25 +176,17 @@ def main():
                    baseline=previous)
         print(json.dumps({"baseline_email_products": len(previous)}))
         return
+    scrape_failures = []
     if args.fixture:
         current = load_json(Path(args.fixture), {})
     else:
-        coles = ColesScraper(
-            config["request_delay_seconds"], config["max_pages"],
-            config["page_size"], config.get("location"),
-            config.get("coles_verified_build_id_fallback", "")
-        )
-        woolworths = WoolworthsScraper(
-            config["request_delay_seconds"], config["max_pages"],
-            config["page_size"], config.get("location"),
-            config.get("woolworths_category")
-        )
+        coles, woolworths = configured_scrapers(config)
         current, scrape_failures = scrape_with_fallback(
-            (("Coles", coles), ("Woolworths", woolworths)),
-            config["category_pages"], previous
+            (("Coles", coles), ("Woolworths", woolworths)), [], previous
         )
     current = {product_id: product for product_id, product in current.items()
-               if is_allowed_product(product.get("name", ""), product.get("brand", ""))}
+               if is_allowed_product(product.get("name", ""), product.get("brand", ""),
+                                     product.get("category_group", ""))}
     observed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     first_run = not previous
     display_current = visible_products(previous, current, first_run or args.reset_baseline)
@@ -137,7 +194,8 @@ def main():
         previous, current, observed_at, (e["event_id"] for e in history)
     )
     updated_history = history + events
-    write_workbook(workbook_path, updated_history, display_current, report_events=events)
+    write_workbook(workbook_path, updated_history, display_current, report_events=events,
+                   failures=scrape_failures if not args.fixture else ())
     save_json(DATA / "current.json", current)
     save_json(DATA / "events.json", updated_history)
     print(json.dumps({"products": len(current), "changes": len(events), "baseline": first_run,
@@ -147,13 +205,14 @@ def main():
     password = os.environ.get("GMAIL_APP_PASSWORD", "")
     body_events = email_visible_events(events)
     should_email = ((first_run and args.email_baseline) or
-                    (not first_run and bool(body_events)))
+                    (not first_run and bool(body_events or scrape_failures)))
     if not should_email:
         return
     if not password:
         raise RuntimeError("GMAIL_APP_PASSWORD is required when changes need to be emailed")
     send_email(config["sender"], config["recipient"], password, body_events, workbook_path,
-               baseline=display_current if first_run else None)
+               baseline=display_current if first_run else None,
+               failures=scrape_failures if not args.fixture else ())
 
 
 if __name__ == "__main__":

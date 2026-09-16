@@ -13,7 +13,8 @@ on:
       - ".send-latest-once"
       - ".send-test-once"
       - ".send-multibuy-test-once"
-      - ".run-live-test-once"
+      - ".source-smoke-once"
+      - ".send-live-baseline-once"
   schedule:
     # 06:00 AEST every Wednesday (fixed UTC+10; 07:00 local during AEDT).
     - cron: "0 20 * * 2"
@@ -45,6 +46,38 @@ jobs:
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
+
+      - name: Validate live category sources once
+        if: ${{ hashFiles('.source-smoke-once') != '' }}
+        continue-on-error: true
+        env:
+          COLES_BUILD_ID: ${{ secrets.COLES_BUILD_ID }}
+        run: python run_monitor.py --source-smoke
+
+      - name: Retire source-validation marker
+        if: ${{ always() && hashFiles('.source-smoke-once') != '' }}
+        run: |
+          git config user.name "coles-monitor[bot]"
+          git config user.email "coles-monitor[bot]@users.noreply.github.com"
+          git rm .source-smoke-once
+          git commit -m "Mark live category validation as complete"
+          git push
+
+      - name: Send fresh live baseline test once
+        if: ${{ hashFiles('.send-live-baseline-once') != '' }}
+        env:
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          COLES_BUILD_ID: ${{ secrets.COLES_BUILD_ID }}
+        run: python run_monitor.py --send-live-baseline-test
+
+      - name: Retire live-baseline test marker
+        if: ${{ success() && hashFiles('.send-live-baseline-once') != '' }}
+        run: |
+          git config user.name "coles-monitor[bot]"
+          git config user.email "coles-monitor[bot]@users.noreply.github.com"
+          git rm .send-live-baseline-once
+          git commit -m "Mark live baseline test as sent"
+          git push
 
       - name: Send explicit multibuy test once
         if: ${{ hashFiles('.send-multibuy-test-once') != '' }}
@@ -107,26 +140,22 @@ jobs:
           git push
 
       - name: Scrape, compare, record and notify
-        if: ${{ github.event_name != 'push' || hashFiles('.run-live-test-once') != '' }}
+        if: ${{ github.event_name != 'push' }}
         env:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           COLES_BUILD_ID: ${{ secrets.COLES_BUILD_ID }}
-          RETAIL_PROXY_URL: ${{ secrets.RETAIL_PROXY_URL }}
-        run: python run_monitor.py --email-baseline
+        run: python run_monitor.py
 
       - name: Commit updated snapshot and history
-        if: ${{ github.event_name != 'push' || hashFiles('.run-live-test-once') != '' }}
+        if: ${{ github.event_name != 'push' }}
         run: |
-          if git diff --quiet -- data && [ ! -f .run-live-test-once ]; then
+          if git diff --quiet -- data; then
             echo "No state changes to commit."
             exit 0
           fi
-          git config user.name "frozen-seafood-monitor[bot]"
-          git config user.email "frozen-seafood-monitor[bot]@users.noreply.github.com"
+          git config user.name "coles-monitor[bot]"
+          git config user.email "coles-monitor[bot]@users.noreply.github.com"
           git add data/current.json data/events.json data/coles-woolworths-frozen-seafood-change-history.xlsx
-          if [ -f .run-live-test-once ]; then
-            git rm .run-live-test-once
-          fi
           git commit -m "Update frozen seafood product snapshot"
           git push
 

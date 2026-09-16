@@ -10,20 +10,18 @@ def is_wanted_name(name):
 
 
 def keyword_group(name):
-    """Group category-page SKUs for readable reports; never decide inclusion."""
-    words = set(re.findall(r"[a-z]+", normalize(name).lower()))
-    if words.intersection({"prawn", "prawns", "shrimp"}):
-        return "Prawns & Shrimp"
-    if words.intersection({"squid", "calamari", "octopus"}):
-        return "Squid & Calamari"
-    if words.intersection({"mussel", "mussels", "scallop", "scallops", "oyster", "oysters"}):
-        return "Shellfish"
-    return "Fish & Other Seafood"
+    """Return the single report group for any SKU on the configured pages."""
+    return "Frozen Seafood" if normalize(name) else None
 
 
-def is_allowed_product(name, brand=""):
-    # Membership of the supplied retailer category pages is the inclusion rule.
-    return bool(normalize(name))
+def category_group(name, category_hint=""):
+    """Classify every product returned by either configured category page."""
+    return keyword_group(name)
+
+
+def is_allowed_product(name, brand="", category_hint=""):
+    # Category-page membership is the complete inclusion rule.
+    return category_group(name, category_hint) is not None
 
 
 def split_name_size(name, explicit_size=""):

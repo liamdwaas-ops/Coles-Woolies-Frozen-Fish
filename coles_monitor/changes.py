@@ -2,19 +2,15 @@ import hashlib
 import json
 
 
-FIELDS = ("name", "price", "original_price", "promotional_price",
-          "discount_percent", "size", "image_url", "online_only")
-PRICE_FIELDS = {"price", "original_price", "promotional_price", "discount_percent"}
-PRICE_CHANGE_TYPES = {"Price changed", "Original price changed",
-                      "Promotional price changed", "Discount percentage changed"}
+FIELDS = ("name", "size")
 
 
 def summarize_change_type(change_type):
     summaries = {
         "Price changed": "Price",
-        "Original price changed": "Price",
-        "Promotional price changed": "Price",
-        "Discount percentage changed": "Price",
+        "Original price changed": "RRP changed",
+        "Promotional price changed": "Promotion",
+        "Discount percentage changed": "Promotion",
         "Name changed": "Name",
         "Size changed": "Size",
         "Image changed": "Image",
@@ -24,6 +20,76 @@ def summarize_change_type(change_type):
         "Back in stock": "Restocked",
     }
     return summaries.get(change_type, change_type)
+
+
+def _images(product):
+    images = product.get("image_urls")
+    if isinstance(images, list):
+        return [str(value) for value in images if value]
+    primary = product.get("image_url")
+    return [str(primary)] if primary else []
+
+
+def _image_changes(old, product):
+    old_images = _images(old)
+    new_images = _images(product)
+    # A legacy snapshot knew only the primary image. Adopt newly discovered
+    # secondary positions silently so this schema upgrade is not misreported
+    # as a retailer image change.
+    if "image_urls" not in old:
+        old_images = old_images[:1]
+        new_images = new_images[:1]
+    changes = []
+    for index in range(max(len(old_images), len(new_images))):
+        before = old_images[index] if index < len(old_images) else None
+        after = new_images[index] if index < len(new_images) else None
+        if before == after:
+            continue
+        position = index + 1
+        action = "added" if before is None else "removed" if after is None else "changed"
+        changes.append((f"Image {position} {action}", before, after))
+    return changes
+
+
+def _price_changes(old, product):
+    old_promo = old.get("promotional_price")
+    new_promo = product.get("promotional_price")
+    price_changed = old.get("price") != product.get("price")
+    original_changed = old.get("original_price") != product.get("original_price")
+    promo_changed = old_promo != new_promo
+    discount_changed = old.get("discount_percent") != product.get("discount_percent")
+    changes = []
+
+    rrp_changed = False
+    promotion_changed = False
+    if promo_changed:
+        promotion_changed = True
+    if original_changed:
+        if old.get("original_price") is not None and product.get("original_price") is not None:
+            rrp_changed = True
+        else:
+            promotion_changed = True
+    if price_changed:
+        if old_promo is None and new_promo is None:
+            rrp_changed = True
+        elif promo_changed:
+            promotion_changed = True
+        elif isinstance(old_promo, str) and isinstance(new_promo, str):
+            rrp_changed = True
+        else:
+            promotion_changed = True
+    if discount_changed and not (rrp_changed and not promo_changed):
+        promotion_changed = True
+
+    if rrp_changed:
+        before_rrp = old.get("original_price")
+        after_rrp = product.get("original_price")
+        changes.append(("RRP changed",
+                        old.get("price") if before_rrp is None else before_rrp,
+                        product.get("price") if after_rrp is None else after_rrp))
+    if promotion_changed:
+        changes.append(("Promotion", old_promo, new_promo))
+    return changes
 
 
 def stable_event_id(product_id, change_type, before, after=None):
@@ -51,20 +117,19 @@ def compare(previous, current, observed_at, seen_event_ids=()):
         elif old is None:
             candidates = [("New product", "", product.get("name", ""))]
         else:
-            candidates = []
+            candidates = _price_changes(old, product)
             for field in FIELDS:
                 before, after = old.get(field), product.get(field)
                 if before != after:
-                    labels = {
-                        "online_only": "Online Only status",
-                        "original_price": "Original price",
-                        "promotional_price": "Promotional price",
-                        "discount_percent": "Discount percentage",
-                    }
-                    label = ("Price" if field in PRICE_FIELDS else
-                             labels.get(field, field.replace("_url", "").title()))
+                    label = field.title()
                     raw_change_type = label + " changed"
                     candidates.append((summarize_change_type(raw_change_type), before, after))
+            if old.get("online_only") != product.get("online_only"):
+                label = ("Promotion" if (old.get("promotional_price") is not None or
+                                          product.get("promotional_price") is not None)
+                         else "Online only")
+                candidates.append((label, old.get("online_only"), product.get("online_only")))
+            candidates.extend(_image_changes(old, product))
         if candidates:
             change_type = "; ".join(dict.fromkeys(
                 summarize_change_type(candidate[0]) for candidate in candidates
@@ -87,6 +152,8 @@ def compare(previous, current, observed_at, seen_event_ids=()):
                 "availability_label": product.get("availability_label", ""),
                 "size": product.get("size", ""),
                 "image_url": product.get("image_url", ""),
+                "image_urls": product.get("image_urls", []),
+                "category_group": product.get("category_group", ""),
                 "online_only": bool(product.get("online_only")),
                 "product_url": product.get("product_url", ""),
                 "promotion_ended": bool(
