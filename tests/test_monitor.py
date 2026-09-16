@@ -191,6 +191,36 @@ class TwoLocationAvailabilityTests(unittest.TestCase):
                          "temporary_unavailable")
         self.assertEqual(compare(previous, disagreement, "later"), [])
 
+    def test_disagreement_then_both_unavailable_is_reported_but_reverse_is_not(self):
+        available = {"coles:1": self.product("in_stock")}
+
+        # Week 1: Cheltenham and Broadway disagree, so availability is unchanged.
+        week_one = reconcile_availability(
+            {"coles:1": self.product("out_of_stock")},
+            {"coles:1": self.product("in_stock")},
+            available,
+        )
+        self.assertEqual(week_one["coles:1"]["availability_state"], "in_stock")
+        self.assertEqual(compare(available, week_one, "week-one"), [])
+
+        # Week 2: both are unavailable, so the new consensus issue is reported.
+        week_two = reconcile_availability(
+            {"coles:1": self.product("out_of_stock")},
+            {"coles:1": self.product("out_of_stock")},
+            week_one,
+        )
+        self.assertEqual(compare(week_one, week_two, "week-two")[0]["change_type"],
+                         "Unavailable")
+
+        # Week 3: only one suburb recovers; this does not count as a restock.
+        week_three = reconcile_availability(
+            {"coles:1": self.product("in_stock")},
+            {"coles:1": self.product("out_of_stock")},
+            week_two,
+        )
+        self.assertEqual(week_three["coles:1"]["availability_state"], "out_of_stock")
+        self.assertEqual(compare(week_two, week_three, "week-three"), [])
+
     def test_backup_scrape_is_lazy_and_only_used_for_availability_verification(self):
         class StaticScraper:
             def __init__(self, products):
